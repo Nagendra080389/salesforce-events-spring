@@ -1,0 +1,38 @@
+salesforce:
+  # Pub/Sub API Configuration
+  pubsub:
+    host: api.pubsub.salesforce.com
+    port: 7443
+    use-plaintext: false
+
+  # Authentication - Use either username/password OR access-token/tenant-id
+  auth:
+    login-url: ${SALESFORCE_LOGIN_URL:https://login.salesforce.com}
+    username: ${SALESFORCE_USERNAME:}
+    password: ${SALESFORCE_PASSWORD:}
+    access-token: ${SALESFORCE_ACCESS_TOKEN:}
+    tenant-id: ${SALESFORCE_TENANT_ID:}
+
+  # Event Configuration
+  event:
+    topic: ${SALESFORCE_TOPIC:/event/Order_Event__e}
+    batch-size: 10
+    replay-preset: LATEST  # Options: LATEST, EARLIEST, CUSTOM
+    process-change-fields: false
+
+# Spring Boot Configuration
+server:
+  port: 8080
+
+spring:
+  application:
+    name: salesforce-events-spring
+  thymeleaf:
+    cache: false
+    prefix: classpath:/templates/
+    suffix: .html
+
+logging:
+  level:
+    com.salesforce.events: DEBUG
+    io.grpc: INFO

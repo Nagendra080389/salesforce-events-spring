@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Salesforce Platform Events Monitor</title>
+
+    <!-- Modern CSS Framework -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+
+    <!-- SockJS and STOMP -->
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1.6.1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+    <style>
+        @keyframes pulse-glow {
+            0%, 100% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.5); }
+            50% { box-shadow: 0 0 40px rgba(59, 130, 246, 0.8); }
+        }
+
+        @keyframes slide-in {
+            from {
+                transform: translateX(-100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .event-card {
+            animation: slide-in 0.5s ease-out;
+        }
+
+        .status-connected {
+            animation: pulse-glow 2s infinite;
+        }
+
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .event-container {
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .event-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .event-container::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        .event-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 10px;
+        }
+
+        .event-container::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        .loading-dots span {
+            animation: blink 1.4s infinite both;
+        }
+
+        .loading-dots span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .loading-dots span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes blink {
+            0%, 60%, 100% { opacity: 0.2; }
+            20% { opacity: 1; }
+        }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen text-white">
+<div class="container mx-auto px-4 py-8">
+    <!-- Header -->
+    <div class="text-center mb-10">
+        <h1 class="text-5xl font-bold mb-4 flex items-center justify-center">
+            <i class="fab fa-salesforce mr-4 text-blue-300"></i>
+            Platform Events Monitor
+        </h1>
+        <p class="text-xl opacity-90">Real-time Salesforce Event Streaming Dashboard</p>
+    </div>
+
+    <!-- Connection Status Card -->
+    <div class="glass-effect rounded-2xl p-6 mb-8 shadow-2xl">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Connection Status -->
+            <div class="text-center">
+                <h3 class="text-lg font-semibold mb-3 opacity-80">Connection Status</h3>
+                <div id="connectionStatus" class="flex items-center justify-center">
+                    <div class="w-4 h-4 rounded-full mr-3" id="statusIndicator"></div>
+                    <span id="statusText" class="text-xl font-bold">Connecting...</span>
+                </div>
+            </div>
+
+            <!-- Current Topic -->
+            <div class="text-center">
+                <h3 class="text-lg font-semibold mb-3 opacity-80">Event Channel</h3>
+                <div class="flex items-center justify-center">
+                    <i class="fas fa-broadcast-tower mr-3 text-blue-300"></i>
+                    <span id="topicName" class="text-xl font-mono bg-black bg-opacity-30 px-3 py-1 rounded">
+                            [[${topic}]]
+                        </span>
+                </div>
+            </div>
+
+            <!-- Events Counter -->
+            <div class="text-center">
+                <h3 class="text-lg font-semibold mb-3 opacity-80">Total Events</h3>
+                <div class="flex items-center justify-center">
+                    <i class="fas fa-chart-line mr-3 text-green-300"></i>
+                    <span id="eventCounter" class="text-3xl font-bold">0</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="mt-6 flex justify-center space-x-4">
+            <button onclick="reconnect()" class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-lg transition-all transform hover:scale-105 shadow-lg">
+                <i class="fas fa-sync-alt mr-2"></i>Reconnect
+            </button>
+            <button onclick="clearEvents()" class="bg-red-600 hover:bg-red-700 px-6 py-2 rounded-lg transition-all transform hover:scale-105 shadow-lg">
+                <i class="fas fa-trash mr-2"></i>Clear Events
+            </button>
+            <button onclick="toggleAutoScroll()" id="autoScrollBtn" class="bg-green-600 hover:bg-green-700 px-6 py-2 rounded-lg transition-all transform hover:scale-105 shadow-lg">
+                <i class="fas fa-arrow-down mr-2"></i>Auto-Scroll: ON
+            </button>
+        </div>
+    </div>
+
+    <!-- Events Display -->
+    <div class="glass-effect rounded-2xl p-6 shadow-2xl">
+        <div class="flex justify-between items-center mb-6">
+            <h2 class="text-2xl font-bold">
+                <i class="fas fa-stream mr-3 text-yellow-300"></i>Live Event Stream
+            </h2>
+            <div id="liveIndicator" class="flex items-center">
+                <div class="w-3 h-3 bg-red-500 rounded-full mr-2 animate-pulse"></div>
+                <span class="text-sm uppercase tracking-wider">LIVE</span>
+            </div>
+        </div>
+
+        <!-- Events Container -->
+        <div id="eventsContainer" class="event-container space-y-4">
+            <div id="noEventsMessage" class="text-center py-20 opacity-70">
+                <i class="fas fa-inbox text-6xl mb-4"></i>
+                <p class="text-xl">Waiting for events<span class="loading-dots"><span>.</span><span>.</span><span>.</span></span></p>
+                <p class="text-sm mt-2">Events will appear here as they are published</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let stompClient = null;
+    let eventCount = 0;
+    let autoScroll = true;
+
+    // Initialize WebSocket connection
+    function connect() {
+        const socket = new SockJS('/ws-events');
+        stompClient = Stomp.over(socket);
+
+        stompClient.connect({}, function(frame) {
+            console.log('Connected: ' + frame);
+            updateConnectionStatus('CONNECTED');
+
+            // Subscribe to events
+            stompClient.subscribe('/topic/events', function(message) {
+                const event = JSON.parse(message.body);
+                displayEvent(event);
+            });
+
+            // Subscribe to status updates
+            stompClient.subscribe('/topic/status', function(message) {
+                const status = JSON.parse(message.body);
+                updateStatus(status);
+            });
+        }, function(error) {
+            console.error('Connection error:', error);
+            updateConnectionStatus('ERROR');
+            setTimeout(connect, 5000); // Retry after 5 seconds
+        });
+    }
+
+    // Display event in the UI
+    function displayEvent(event) {
+        const noEventsMessage = document.getElementById('noEventsMessage');
+        if (noEventsMessage) {
+            noEventsMessage.remove();
+        }
+
+        eventCount++;
+        document.getElementById('eventCounter').textContent = eventCount;
+
+        const eventCard = document.createElement('div');
+        eventCard.className = 'event-card bg-white bg-opacity-10 rounded-lg p-4 hover:bg-opacity-20 transition-all';
+
+        const timestamp = new Date(event.timestamp).toLocaleString();
+        const eventId = event.eventId || 'N/A';
+
+        let payloadHtml = '<div class="grid grid-cols-2 gap-2 text-sm">';
+        if (event.payload) {
+            for (const [key, value] of Object.entries(event.payload)) {
+                payloadHtml += `
+                        <div class="col-span-1">
+                            <span class="opacity-70">${key}:</span>
+                            <span class="ml-2 font-mono">${value}</span>
+                        </div>
+                    `;
+            }
+        }
+        payloadHtml += '</div>';
+
+        eventCard.innerHTML = `
+                <div class="flex justify-between items-start mb-2">
+                    <div>
+                        <span class="text-xs bg-blue-500 bg-opacity-50 px-2 py-1 rounded">EVENT #${eventCount}</span>
+                        <span class="text-xs ml-2 opacity-70">${timestamp}</span>
+                    </div>
+                    <i class="fas fa-bolt text-yellow-300"></i>
+                </div>
+                <div class="mt-3">
+                    <div class="text-xs opacity-70 mb-1">Event ID: ${eventId}</div>
+                    ${payloadHtml}
+                </div>
+            `;
+
+        const container = document.getElementById('eventsContainer');
+        container.insertBefore(eventCard, container.firstChild);
+
+        // Keep only last 50 events
+        while (container.children.length > 50) {
+            container.removeChild(container.lastChild);
+        }
+
+        // Auto-scroll if enabled
+        if (autoScroll) {
+            container.scrollTop = 0;
+        }
+    }
+
+    // Update connection status
+    function updateConnectionStatus(status) {
+        const statusText = document.getElementById('statusText');
+        const statusIndicator = document.getElementById('statusIndicator');
+
+        statusText.textContent = status;
+
+        // Update indicator color
+        statusIndicator.className = 'w-4 h-4 rounded-full mr-3';
+        switch(status) {
+            case 'CONNECTED':
+            case 'SUBSCRIBED':
+                statusIndicator.classList.add('bg-green-500', 'status-connected');
+                break;
+            case 'CONNECTING':
+            case 'SUBSCRIBING':
+                statusIndicator.classList.add('bg-yellow-500', 'animate-pulse');
+                break;
+            case 'ERROR':
+            case 'DISCONNECTED':
+                statusIndicator.classList.add('bg-red-500');
+                break;
+            default:
+                statusIndicator.classList.add('bg-gray-500');
+        }
+    }
+
+    // Update status from server
+    function updateStatus(status) {
+        updateConnectionStatus(status.status);
+        document.getElementById('topicName').textContent = status.topic;
+        if (status.eventsReceived > eventCount) {
+            eventCount = status.eventsReceived;
+            document.getElementById('eventCounter').textContent = eventCount;
+        }
+    }
+
+    // Reconnect function
+    function reconnect() {
+        if (stompClient !== null) {
+            stompClient.disconnect();
+        }
+        updateConnectionStatus('CONNECTING');
+
+        fetch('/api/reconnect', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Reconnect initiated:', data);
+                connect();
+            });
+    }
+
+    // Clear events
+    function clearEvents() {
+        const container = document.getElementById('eventsContainer');
+        container.innerHTML = `
+                <div id="noEventsMessage" class="text-center py-20 opacity-70">
+                    <i class="fas fa-inbox text-6xl mb-4"></i>
+                    <p class="text-xl">Waiting for events<span class="loading-dots"><span>.</span><span>.</span><span>.</span></span></p>
+                    <p class="text-sm mt-2">Events will appear here as they are published</p>
+                </div>
+            `;
+    }
+
+    // Toggle auto-scroll
+    function toggleAutoScroll() {
+        autoScroll = !autoScroll;
+        const btn = document.getElementById('autoScrollBtn');
+        if (autoScroll) {
+            btn.innerHTML = '<i class="fas fa-arrow-down mr-2"></i>Auto-Scroll: ON';
+            btn.className = 'bg-green-600 hover:bg-green-700 px-6 py-2 rounded-lg transition-all transform hover:scale-105 shadow-lg';
+        } else {
+            btn.innerHTML = '<i class="fas fa-pause mr-2"></i>Auto-Scroll: OFF';
+            btn.className = 'bg-gray-600 hover:bg-gray-700 px-6 py-2 rounded-lg transition-all transform hover:scale-105 shadow-lg';
+        }
+    }
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        connect();
+    });
+</script>
+</body>
+</html>
