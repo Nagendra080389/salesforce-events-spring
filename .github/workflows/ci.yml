@@ -70,14 +70,6 @@ jobs:
       - name: Package application
         run: mvn package -DskipTests=true
 
-      # Upload build artifacts (optional)
-      - name: Upload JAR artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: salesforce-events-spring-jar
-          path: target/*.jar
-          retention-days: 30
-
   # Optional: Code quality checks
   code-quality:
     name: Code Quality Checks
