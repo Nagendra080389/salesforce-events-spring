@@ -129,17 +129,6 @@ public class EventSubscriptionService {
 
             serverStream.onNext(fetchRequestBuilder.build());
             connectionStatus = ConnectionStatus.SUBSCRIBED;
-
-            // Keep the subscription alive
-            while (isActive.get()) {
-                try {
-                    Thread.sleep(5000);
-                    log.debug("Subscription active. Total events received: {}", receivedEvents.get());
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
         }
     }
 

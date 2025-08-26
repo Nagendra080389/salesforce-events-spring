@@ -1,5 +1,7 @@
 package com.salesforce.events.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.salesforce.events.config.SalesforceConfig;
 import io.grpc.CallCredentials;
 import io.grpc.Metadata;
@@ -8,115 +10,225 @@ import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jetty.client.HttpClient;
 import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Request;
-import org.eclipse.jetty.client.util.StringContentProvider;
+import org.eclipse.jetty.client.util.FormContentProvider;
+import org.eclipse.jetty.util.Fields;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.xml.sax.Attributes;
-import org.xml.sax.SAXException;
-import org.xml.sax.helpers.DefaultHandler;
 
 import javax.annotation.PostConstruct;
-import javax.xml.parsers.SAXParser;
-import javax.xml.parsers.SAXParserFactory;
-import java.io.ByteArrayInputStream;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
+import javax.annotation.PreDestroy;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 @Service
 @Slf4j
 public class SalesforceAuthService {
 
-    private static final String SERVICES_SOAP_PARTNER_ENDPOINT = "/services/Soap/u/64.0/";
+    private static final String OAUTH_TOKEN_ENDPOINT = "/services/oauth2/token";
+    private static final String USERINFO_ENDPOINT = "/services/oauth2/userinfo";
 
     @Autowired
     private SalesforceConfig config;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     private HttpClient httpClient;
     private SessionInfo sessionInfo;
+    private ScheduledExecutorService tokenRefreshScheduler;
 
     @PostConstruct
     public void init() throws Exception {
         httpClient = new HttpClient();
         httpClient.start();
+
+        tokenRefreshScheduler = Executors.newSingleThreadScheduledExecutor();
+
         authenticate();
+
+        // Schedule token refresh every 50 minutes (tokens typically last 1-2 hours)
+        tokenRefreshScheduler.scheduleAtFixedRate(() -> {
+            try {
+                log.info("Refreshing Salesforce access token...");
+                authenticate();
+            } catch (Exception e) {
+                log.error("Failed to refresh token", e);
+            }
+        }, 50, 50, TimeUnit.MINUTES);
+    }
+
+    @PreDestroy
+    public void cleanup() {
+        if (tokenRefreshScheduler != null) {
+            tokenRefreshScheduler.shutdown();
+        }
+        if (httpClient != null) {
+            try {
+                httpClient.stop();
+            } catch (Exception e) {
+                log.error("Error stopping HTTP client", e);
+            }
+        }
     }
 
     public void authenticate() throws Exception {
+        // Check if we should use direct access token (for backward compatibility)
         if (config.getAuth().getAccessToken() != null && !config.getAuth().getAccessToken().isEmpty()) {
             sessionInfo = new SessionInfo();
             sessionInfo.setSessionId(config.getAuth().getAccessToken());
             sessionInfo.setOrganizationId(config.getAuth().getTenantId());
             sessionInfo.setInstanceUrl(config.getAuth().getLoginUrl());
-            log.info("Authenticated using access token");
-        } else if (config.getAuth().getUsername() != null && config.getAuth().getPassword() != null) {
-            login();
+            log.info("Authenticated using provided access token");
+            return;
+        }
+
+        // Use OAuth 2.0 Client Credentials flow
+        if (config.getAuth().getClientId() != null && config.getAuth().getClientSecret() != null) {
+            authenticateWithClientCredentials();
+        }
+        // Fall back to username/password if configured (JWT or password flow)
+        else if (config.getAuth().getUsername() != null && config.getAuth().getPassword() != null) {
+            authenticateWithPassword();
         } else {
-            throw new IllegalStateException("No authentication credentials provided");
+            throw new IllegalStateException("No authentication credentials provided. " +
+                    "Please configure either client_id/client_secret or username/password");
         }
     }
 
-    private void login() throws Exception {
-        String endpoint = config.getAuth().getLoginUrl() + SERVICES_SOAP_PARTNER_ENDPOINT;
-        Request post = httpClient.POST(endpoint);
+    /**
+     * OAuth 2.0 Client Credentials Flow
+     * This is the most secure method for server-to-server integration
+     */
+    private void authenticateWithClientCredentials() throws Exception {
+        log.info("Authenticating with OAuth 2.0 Client Credentials flow");
 
-        String soapBody = buildLoginSoapRequest(config.getAuth().getUsername(), config.getAuth().getPassword());
-        post.content(new StringContentProvider("text/xml", soapBody, StandardCharsets.UTF_8));
-        post.header("SOAPAction", "''");
-        post.header("PrettyPrint", "Yes");
+        String tokenUrl = config.getAuth().getLoginUrl() + OAUTH_TOKEN_ENDPOINT;
 
-        ContentResponse response = post.send();
-        LoginResponseParser parser = parseLoginResponse(response);
+        Fields fields = new Fields();
+        fields.put("grant_type", "client_credentials");
+        fields.put("client_id", config.getAuth().getClientId());
+        fields.put("client_secret", config.getAuth().getClientSecret());
 
-        if (parser.sessionId == null || parser.serverUrl == null) {
-            throw new Exception("Unable to login: " + parser.faultstring);
+        Request request = httpClient.POST(tokenUrl);
+        request.content(new FormContentProvider(fields));
+
+        ContentResponse response = request.send();
+
+        if (response.getStatus() != 200) {
+            throw new Exception("Authentication failed with status: " + response.getStatus() +
+                    ", Response: " + response.getContentAsString());
         }
+
+        JsonNode tokenResponse = objectMapper.readTree(response.getContent());
+
+        String accessToken = tokenResponse.get("access_token").asText();
+        String instanceUrl = tokenResponse.get("instance_url").asText();
+        String id = tokenResponse.get("id").asText();
+
+        // Extract organization ID from the identity URL
+        String orgId = extractOrgIdFromIdentityUrl(id);
 
         sessionInfo = new SessionInfo();
-        sessionInfo.setSessionId(parser.sessionId);
-        sessionInfo.setOrganizationId(parser.organizationId);
-        sessionInfo.setInstanceUrl(extractInstanceUrl(parser.serverUrl));
+        sessionInfo.setSessionId(accessToken);
+        sessionInfo.setInstanceUrl(instanceUrl);
+        sessionInfo.setOrganizationId(orgId);
+        sessionInfo.setTokenType(tokenResponse.get("token_type").asText());
 
-        log.info("Successfully authenticated with Salesforce. Org ID: {}", sessionInfo.getOrganizationId());
+        log.info("Successfully authenticated with Client Credentials. Instance: {}, Org ID: {}",
+                instanceUrl, orgId);
     }
 
-    private String buildLoginSoapRequest(String username, String password) {
-        return "<soapenv:Envelope xmlns:soapenv='http://schemas.xmlsoap.org/soap/envelope/' " +
-                "xmlns:urn='urn:partner.soap.sforce.com'>" +
-                "<soapenv:Body>" +
-                "<urn:login>" +
-                "<urn:username>" + username + "</urn:username>" +
-                "<urn:password>" + password + "</urn:password>" +
-                "</urn:login>" +
-                "</soapenv:Body>" +
-                "</soapenv:Envelope>";
-    }
+    /**
+     * OAuth 2.0 Username-Password Flow (less secure, use only if client credentials not available)
+     */
+    private void authenticateWithPassword() throws Exception {
+        log.info("Authenticating with OAuth 2.0 Username-Password flow");
 
-    private String extractInstanceUrl(String serverUrl) throws Exception {
-        java.net.URL url = new java.net.URL(serverUrl);
-        String result = url.getProtocol() + "://" + url.getHost();
-        if (url.getPort() > -1) {
-            result += ":" + url.getPort();
+        String tokenUrl = config.getAuth().getLoginUrl() + OAUTH_TOKEN_ENDPOINT;
+
+        Fields fields = new Fields();
+        fields.put("grant_type", "password");
+        fields.put("client_id", config.getAuth().getClientId());
+        fields.put("client_secret", config.getAuth().getClientSecret());
+        fields.put("username", config.getAuth().getUsername());
+        fields.put("password", config.getAuth().getPassword());
+
+        Request request = httpClient.POST(tokenUrl);
+        request.content(new FormContentProvider(fields));
+        request.header("Accept", "application/json");
+
+        ContentResponse response = request.send();
+
+        if (response.getStatus() != 200) {
+            throw new Exception("Authentication failed with status: " + response.getStatus() +
+                    ", Response: " + response.getContentAsString());
         }
-        return result;
+
+        JsonNode tokenResponse = objectMapper.readTree(response.getContent());
+
+        String accessToken = tokenResponse.get("access_token").asText();
+        String instanceUrl = tokenResponse.get("instance_url").asText();
+        String id = tokenResponse.get("id").asText();
+
+        // Extract organization ID
+        String orgId = extractOrgIdFromIdentityUrl(id);
+
+        sessionInfo = new SessionInfo();
+        sessionInfo.setSessionId(accessToken);
+        sessionInfo.setInstanceUrl(instanceUrl);
+        sessionInfo.setOrganizationId(orgId);
+        sessionInfo.setTokenType(tokenResponse.get("token_type").asText());
+
+        log.info("Successfully authenticated with Username-Password flow. Instance: {}, Org ID: {}",
+                instanceUrl, orgId);
     }
 
-    private LoginResponseParser parseLoginResponse(ContentResponse response) throws Exception {
-        SAXParserFactory spf = SAXParserFactory.newInstance();
-        spf.setFeature("http://xml.org/sax/features/external-general-entities", false);
-        spf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-        spf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-        spf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        spf.setNamespaceAware(true);
+    /**
+     * Extract Organization ID from the identity URL
+     * Identity URL format: https://login.salesforce.com/id/00Dxx0000000000/005xx000000000
+     */
+    private String extractOrgIdFromIdentityUrl(String identityUrl) {
+        try {
+            String[] parts = identityUrl.split("/");
+            if (parts.length >= 2) {
+                // The org ID is the second-to-last segment
+                return parts[parts.length - 2];
+            }
+        } catch (Exception e) {
+            log.warn("Could not extract org ID from identity URL: {}", identityUrl);
+        }
+        return null;
+    }
 
-        SAXParser saxParser = spf.newSAXParser();
-        LoginResponseParser parser = new LoginResponseParser();
-        saxParser.parse(new ByteArrayInputStream(response.getContent()), parser);
+    /**
+     * Get user info from the OAuth userinfo endpoint (optional, for additional metadata)
+     */
+    public JsonNode getUserInfo() throws Exception {
+        if (sessionInfo == null || sessionInfo.getSessionId() == null) {
+            throw new IllegalStateException("Not authenticated");
+        }
 
-        return parser;
+        String userInfoUrl = sessionInfo.getInstanceUrl() + USERINFO_ENDPOINT;
+
+        Request request = httpClient.newRequest(userInfoUrl);
+        request.header("Authorization", sessionInfo.getTokenType() + " " + sessionInfo.getSessionId());
+        request.header("Accept", "application/json");
+
+        ContentResponse response = request.send();
+
+        if (response.getStatus() != 200) {
+            throw new Exception("Failed to get user info: " + response.getContentAsString());
+        }
+
+        return objectMapper.readTree(response.getContent());
     }
 
     public CallCredentials getCallCredentials() {
+        if (sessionInfo == null) {
+            throw new IllegalStateException("Not authenticated. Call authenticate() first.");
+        }
         return new ApiSessionCredentials(sessionInfo);
     }
 
@@ -129,54 +241,7 @@ public class SalesforceAuthService {
         private String sessionId;
         private String organizationId;
         private String instanceUrl;
-    }
-
-    private static class LoginResponseParser extends DefaultHandler {
-        String buffer;
-        String faultstring;
-        boolean reading = false;
-        String serverUrl;
-        String sessionId;
-        String organizationId;
-
-        @Override
-        public void characters(char[] ch, int start, int length) {
-            if (reading) {
-                buffer = new String(ch, start, length);
-            }
-        }
-
-        @Override
-        public void endElement(String uri, String localName, String qName) {
-            reading = false;
-            switch (localName) {
-                case "organizationId":
-                    organizationId = buffer;
-                    break;
-                case "sessionId":
-                    sessionId = buffer;
-                    break;
-                case "serverUrl":
-                    serverUrl = buffer;
-                    break;
-                case "faultstring":
-                    faultstring = buffer;
-                    break;
-            }
-            buffer = null;
-        }
-
-        @Override
-        public void startElement(String uri, String localName, String qName, Attributes attributes) {
-            switch (localName) {
-                case "sessionId":
-                case "serverUrl":
-                case "faultstring":
-                case "organizationId":
-                    reading = true;
-                    break;
-            }
-        }
+        private String tokenType = "Bearer";
     }
 
     public static class ApiSessionCredentials extends CallCredentials {

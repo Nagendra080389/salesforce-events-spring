@@ -23,6 +23,12 @@ public class SalesforceConfig {
     @Data
     public static class Auth {
         private String loginUrl;
+
+        // OAuth 2.0 Client Credentials (Recommended)
+        private String clientId;
+        private String clientSecret;
+
+        // Legacy authentication methods
         private String username;
         private String password;
         private String accessToken;

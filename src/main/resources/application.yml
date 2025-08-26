@@ -5,17 +5,26 @@ salesforce:
     port: 7443
     use-plaintext: false
 
-  # Authentication - Use either username/password OR access-token/tenant-id
+  # Authentication Configuration
+  # ================================
   auth:
-    login-url: ${SALESFORCE_LOGIN_URL:https://login.salesforce.com}
-    username: ${SALESFORCE_USERNAME:}
-    password: ${SALESFORCE_PASSWORD:}
-    access-token: ${SALESFORCE_ACCESS_TOKEN:}
-    tenant-id: ${SALESFORCE_TENANT_ID:}
+    login-url: ${SALESFORCE_LOGIN_URL}
+
+    # Option 1: Client Credentials Flow (RECOMMENDED)
+    client-id: ${SALESFORCE_CLIENT_ID}
+    client-secret: ${SALESFORCE_CLIENT_SECRET}
+
+    # Option 2: Username/Password Flow (Less secure, use only for testing)
+    # username: ${SALESFORCE_USERNAME:}
+    # password: ${SALESFORCE_PASSWORD:}
+
+    # Option 3: Direct Access Token (For testing only)
+    # access-token: ${SALESFORCE_ACCESS_TOKEN:}
+    # tenant-id: ${SALESFORCE_TENANT_ID:}
 
   # Event Configuration
   event:
-    topic: ${SALESFORCE_TOPIC:/event/Order_Event__e}
+    topic: ${SALESFORCE_TOPIC}
     batch-size: 10
     replay-preset: LATEST  # Options: LATEST, EARLIEST, CUSTOM
     process-change-fields: false
@@ -36,3 +45,4 @@ logging:
   level:
     com.salesforce.events: DEBUG
     io.grpc: INFO
+    org.eclipse.jetty: INFO
