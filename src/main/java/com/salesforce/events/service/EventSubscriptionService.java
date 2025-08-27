@@ -8,6 +8,7 @@ import com.salesforce.events.model.PlatformEvent;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.stub.StreamObserver;
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
@@ -58,7 +59,9 @@ public class EventSubscriptionService {
     private final AtomicInteger receivedEvents = new AtomicInteger(0);
 
     private TopicInfo topicInfo;
+    @Getter
     private String currentTopic;
+    @Getter
     private ConnectionStatus connectionStatus = ConnectionStatus.DISCONNECTED;
 
     @PostConstruct
@@ -247,14 +250,6 @@ public class EventSubscriptionService {
                 log.error("Error shutting down channel", e);
             }
         }
-    }
-
-    public ConnectionStatus getConnectionStatus() {
-        return connectionStatus;
-    }
-
-    public String getCurrentTopic() {
-        return currentTopic;
     }
 
     public int getTotalEventsReceived() {

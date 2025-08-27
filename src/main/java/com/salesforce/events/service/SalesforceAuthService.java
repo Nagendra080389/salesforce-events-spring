@@ -27,7 +27,6 @@ import java.util.concurrent.TimeUnit;
 public class SalesforceAuthService {
 
     private static final String OAUTH_TOKEN_ENDPOINT = "/services/oauth2/token";
-    private static final String USERINFO_ENDPOINT = "/services/oauth2/userinfo";
 
     @Autowired
     private SalesforceConfig config;
@@ -187,7 +186,7 @@ public class SalesforceAuthService {
 
     /**
      * Extract Organization ID from the identity URL
-     * Identity URL format: https://login.salesforce.com/id/00Dxx0000000000/005xx000000000
+     * Identity URL format: <a href="https://login.salesforce.com/id/00Dxx0000000000/005xx000000000">...</a>
      */
     private String extractOrgIdFromIdentityUrl(String identityUrl) {
         try {
@@ -202,38 +201,11 @@ public class SalesforceAuthService {
         return null;
     }
 
-    /**
-     * Get user info from the OAuth userinfo endpoint (optional, for additional metadata)
-     */
-    public JsonNode getUserInfo() throws Exception {
-        if (sessionInfo == null || sessionInfo.getSessionId() == null) {
-            throw new IllegalStateException("Not authenticated");
-        }
-
-        String userInfoUrl = sessionInfo.getInstanceUrl() + USERINFO_ENDPOINT;
-
-        Request request = httpClient.newRequest(userInfoUrl);
-        request.header("Authorization", sessionInfo.getTokenType() + " " + sessionInfo.getSessionId());
-        request.header("Accept", "application/json");
-
-        ContentResponse response = request.send();
-
-        if (response.getStatus() != 200) {
-            throw new Exception("Failed to get user info: " + response.getContentAsString());
-        }
-
-        return objectMapper.readTree(response.getContent());
-    }
-
     public CallCredentials getCallCredentials() {
         if (sessionInfo == null) {
             throw new IllegalStateException("Not authenticated. Call authenticate() first.");
         }
         return new ApiSessionCredentials(sessionInfo);
-    }
-
-    public SessionInfo getSessionInfo() {
-        return sessionInfo;
     }
 
     @Data
